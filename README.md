@@ -96,8 +96,8 @@ the **validation split only**.
 |---|---|---|---|---|
 | **CMU-MOSI** | Text, video, audio | Binary / ternary; regression in [−3, +3] | Official 1,284 / 229 / 686 | [Google Drive](https://drive.google.com/drive/folders/1u7zquWeM9qw-iYzzyybdaniJLxHlXQzK) |
 | **MVSA-Single** | Tweet text + image | Pos / Neu / Neg (4,511 filtered samples) | Fixed stratified split (indices released) | [Google Drive](https://drive.google.com/file/d/1UYaPJWZd4NvnLj_A41awkmP5oPc4SP3K/view?usp=sharing) |
-| **MVSA-Multiple** | Tweet text + image | Pos / Neu / Neg (16,779 processed samples) | Fixed stratified split (indices released) | same archive as above |
-| **CMU-MOSEI** | Text, video, audio | Binary; regression in [−3, +3] | Official 16,326 / 1,871 / 4,659 | *revision experiments — code to be added* |
+| **MVSA-Multiple** | Tweet text + image | Pos / Neu / Neg (16,779 processed samples) | Fixed stratified split (indices released) | [Google Drive](https://drive.google.com/file/d/1UYaPJWZd4NvnLj_A41awkmP5oPc4SP3K/view?usp=sharing) |
+| **CMU-MOSEI** | Text, video, audio | Binary; regression in [−3, +3] | Official 16,326 / 1,871 / 4,659 | https://www.kaggle.com/datasets/samarwarsi/cmu-mosei |
 | **Twitter-2015 / 2017** | Text + image (target-oriented) | 3-class | Official | *revision experiments — code to be added* |
 
 > Datasets are **not bundled** with this repository (see [Data setup](#data-setup)).
