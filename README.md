@@ -1,43 +1,106 @@
-# Multimodal Sentiment Analysis with Hybrid MCDM–Neural Fusion
+# HM²F-Net: Hybrid Multimodal Multi-Criteria Fusion for Sentiment Analysis
 
-An interpretable **multimodal sentiment analysis** framework that fuses text and image
-signals for sentiment classification using two complementary strategies:
+Official code for the paper:
 
-1. **Conventional neural fusion** — soft (weighted) averaging and stacked
-   meta-classification over text and image model outputs.
-2. **Multi-Criteria Decision Making (MCDM)** — treating each modality's class
-   probabilities as *decision criteria* and ranking sentiment classes with
-   classical MCDM algorithms (TOPSIS, RAFSI, TODIM, MARCOS, EDAS).
+> **Disentangling Multimodal Sentiment: Interpretable Multi-Criteria Decision Fusion for Cross-Modal Robustness**
+> Neha Punetha (IIT Kharagpur) and Vinayak Abrol (IIIT Delhi)
 
-The goal is to combine the transparency of criteria-based decision theory with
-the predictive power of deep learning, so that fusion decisions are not just
-accurate but explainable in terms of *which modality contributed how much*.
+HM²F-Net reformulates multimodal fusion as a **structured decision-making problem**. Instead of
+concatenating modality embeddings or relying on unconstrained cross-attention, it:
+
+1. extracts **multi-level unimodal sentiment evidence** (fine-grained textual, visual, and optional acoustic criteria),
+2. organizes that evidence into a **class-specific decision matrix**,
+3. aggregates the matrix with a classical **Multi-Criteria Decision-Making (MCDM)** operator (primarily TOPSIS), and
+4. combines the resulting interpretable decision profile with a **neural late-fusion prior** through a calibrated hybrid layer.
+
+The goal is fusion that is accurate, robust when a modality is noisy or missing, and explainable in terms of
+*which criterion contributed how much* to each prediction.
 
 ---
 
-## Why hybrid fusion?
+## Why decision-level fusion?
 
-Most multimodal sentiment models either:
-- concatenate/average modality embeddings and let a neural net learn the
-  weighting implicitly (opaque), or
-- use fixed heuristic rules (rigid, not data-driven).
+Feature-level fusion collapses rich multi-level signals (sentence vs. segment text; global vs. object vs. scene
+imagery) into a single latent vector, so a corrupted modality can dominate the joint representation. HM²F-Net
+keeps each criterion in its own column of the decision matrix. Under TOPSIS, a perturbation of one criterion
+enters the weighted distance to the ideal/anti-ideal profiles through a single orthogonal coordinate scaled by
+its weight, which limits how far that noise propagates (Proposition 3.1 in the paper; a theoretical motivation,
+not a formal guarantee).
 
-This project instead scores each sentiment class against both modalities using
-MCDM methods borrowed from operations research, then compares that against
-standard neural fusion (soft-weighted averaging and logistic-regression
-stacking) to see which approach — or combination — generalizes best across
-datasets and label granularities (binary / tertiary).
+Because MCDM aggregation alone cannot model highly non-linear decision boundaries, its output is blended with a
+neural late-fusion prior. Intermediate blending weights consistently outperform both the pure rule-based and the
+pure neural extremes on all three main benchmarks.
+
+---
+
+## Method overview
+
+![HM²F-Net pipeline](images/pipelines-of-the-methodology.png)
+
+### 1. Multi-level unimodal evidence (criteria)
+
+Criteria of the same modality share one encoder and differ only in input granularity and prediction head. Every
+head outputs a class distribution in the probability simplex Δ^(C−1).
+
+| Criterion | Modality | Extraction |
+|---|---|---|
+| `s_sent` | Text | Classification head on the pooled representation of the full utterance |
+| `s_seg` | Text | Split at sentence punctuation (or 8-token windows, stride 4); segment logits mean-pooled before softmax |
+| `v_glb` | Image | Linear head on the image-level CLIP embedding |
+| `v_obj` | Image | Linear head on the mean CLIP embedding of the top-5 region proposals of a pre-trained detector |
+| `v_scn` | Image | Linear head on the embedding of a scene classifier |
+| `a_aud` | Audio (optional) | Head on utterance-level acoustic features (COVAREP on CMU-MOSI) |
+
+### 2. Decision matrix
+
+For each sample, a matrix **D** ∈ ℝ^(C×K) is built, where `d[i, j]` is the probability of class *i* under
+criterion *j*, together with a criterion weight vector **w** (Σ w = 1).
+
+| Setting | Matrix shape | Columns |
+|---|---|---|
+| MVSA (ternary, headline) | 3 × 5 | 2 text + 3 visual criteria |
+| CMU-MOSI (binary, headline) | 2 × 9 | 6 fine-grained criteria + 3 whole-modality posteriors `p_T, p_I, p_A` |
+| CMU-MOSI (ternary) | 3 × 9 | as above |
+
+Binary evaluation excludes the neutral class (2 × K); ternary evaluation uses 3 × K.
+
+### 3. MCDM aggregation
+
+`s_MCDM = Φ(D, w)`, where Φ is one of the operators implemented in `MCDM.py`:
+
+- **TOPSIS** — distance to ideal / anti-ideal solutions (default)
+- **SAW** — simple additive weighting
+- **RAFSI** — ranking of alternatives through functional mapping of criterion sub-intervals
+- **TODIM** — prospect-theory-based pairwise dominance
+- **MARCOS** — ratio to the compromise solution
+- **EDAS** — distance from the average solution
+
+### 4. Hybrid calibration and final decision
+
+```
+p_NN = Σ_m α_m · p^(m)                 # neural late-fusion prior over unimodal posteriors
+f    = (1 − λ) · s_MCDM + λ · p_NN     # hybrid score, λ ∈ [0, 1]
+ŷ    = argmax_i f_i
+```
+
+A temperature `T` is applied to each unimodal posterior *before* MCDM aggregation,
+`p̃ = softmax(log p / T)`. Because TOPSIS normalizes each criterion column, `T` can change the aggregated ranking,
+so it is selected jointly with **w**. The weights **w**, `α_m`, `λ` (step 0.1), and `T` are all grid-searched on
+the **validation split only**.
 
 ---
 
 ## Datasets
 
-| Dataset | Modality | Labels | Link |
-|---|---|---|---|
-| **MVSA** (Single & Multiple) | Tweet text + attached image | Positive / Negative / Neutral | [Google Drive](https://drive.google.com/file/d/1UYaPJWZd4NvnLj_A41awkmP5oPc4SP3K/view?usp=sharing) |
-| **MOSI** | Spoken utterance (text/audio-derived) + visual | Binary / Tertiary sentiment | [Google Drive folder](https://drive.google.com/drive/folders/1u7zquWeM9qw-iYzzyybdaniJLxHlXQzK) |
+| Dataset | Modalities | Task | Split | Link |
+|---|---|---|---|---|
+| **CMU-MOSI** | Text, video, audio | Binary / ternary; regression in [−3, +3] | Official 1,284 / 229 / 686 | [Google Drive](https://drive.google.com/drive/folders/1u7zquWeM9qw-iYzzyybdaniJLxHlXQzK) |
+| **MVSA-Single** | Tweet text + image | Pos / Neu / Neg (4,511 filtered samples) | Fixed stratified split (indices released) | [Google Drive](https://drive.google.com/file/d/1UYaPJWZd4NvnLj_A41awkmP5oPc4SP3K/view?usp=sharing) |
+| **MVSA-Multiple** | Tweet text + image | Pos / Neu / Neg (16,779 processed samples) | Fixed stratified split (indices released) | same archive as above |
+| **CMU-MOSEI** | Text, video, audio | Binary; regression in [−3, +3] | Official 16,326 / 1,871 / 4,659 | *revision experiments — code to be added* |
+| **Twitter-2015 / 2017** | Text + image (target-oriented) | 3-class | Official | *revision experiments — code to be added* |
 
-> Datasets are **not bundled** in this repo (see [Data Setup](#data-setup) below).
+> Datasets are **not bundled** with this repository (see [Data setup](#data-setup)).
 
 ---
 
@@ -45,140 +108,164 @@ datasets and label granularities (binary / tertiary).
 
 | File | Purpose |
 |---|---|
-| `AMVSA-Single-Binary.py` | Binary (positive/negative) sentiment pipeline on the **MVSA-Single** subset. |
-| `AMVSA-MULTIPLE-binary.py` | Binary sentiment pipeline on the **MVSA-Multiple** subset — builds a cleaned CSV from raw label files, fine-tunes RoBERTa-large (text) and a CLIP ViT-B/32 + linear head (image), then compares soft fusion, stacking, and MCDM fusion. |
-| `Mosi-Binary.py` | Binary sentiment classification on the **MOSI** dataset. |
-| `mosi-Tertiary.py` | Three-class (positive/negative/neutral) sentiment classification on **MOSI**. |
-| `RoBERT+VGG.Net+MCDM-Single.py` | Alternative image encoder variant using **VGG16** (instead of CLIP) combined with RoBERTa text features, fused via MCDM, on the single-label MVSA setup. |
-| `MCDM.py` | Standalone implementations of the MCDM ranking algorithms (TOPSIS, RAFSI, TODIM, MARCOS, EDAS) used across the other scripts. |
-| `Single-modality-Acc.py` | Baseline accuracy evaluation for text-only and image-only models, used as a reference point against fusion results. |
+| `MCDM.py` | Implementations of the MCDM operators (TOPSIS, SAW, RAFSI, TODIM, MARCOS, EDAS) used by all pipelines. |
+| `AMVSA-Single-Binary.py` | MVSA-Single pipeline: fine-tunes RoBERTa-large and CLIP ViT-B/32, then compares soft fusion, stacking, and every MCDM operator ± neural calibration. |
+| `AMVSA-MULTIPLE-binary.py` | MVSA-Multiple pipeline: builds a cleaned CSV from the raw label files, fine-tunes the text and image models, and runs the same fusion comparison. |
+| `Mosi-Binary.py` | CMU-MOSI binary pipeline (Acc2 / F1 / MAE / Corr) on pre-computed SDK features. |
+| `mosi-Tertiary.py` | CMU-MOSI three-class pipeline (Acc3 / F1). |
+| `RoBERT+VGG.Net+MCDM-Single.py` | RoBERTa + VGG16 variant, including the naive (un-normalized concatenation + MLP) fusion control. |
+| `Single-modality-Acc.py` | Unimodal text-only and image-only reference accuracies. |
 
 ---
 
-## Method overview
+## Implementation details
 
-### 1. Feature extraction
-- **Text:** `roberta-large` fine-tuned for sequence classification (2 or 3 classes depending on script).
-- **Image:** either
-  - CLIP ViT-B/32 visual encoder + a lightweight linear classification head, or
-  - VGG16 convolutional features (in the RoBERTa+VGG variant).
+Hardware used: one NVIDIA RTX 3090 (24 GB), 256 GB RAM, PyTorch.
 
-### 2. Neural fusion baselines
-- **Soft fusion:** weighted average of text/image softmax probabilities, with
-  the weight `w` tuned on the validation set over a grid (e.g. `0.5–0.95`).
-- **Stacking:** a `LogisticRegressionCV` meta-classifier trained on the
-  concatenation of both modalities' logits plus **entropy** and **decision
-  margin** as additional uncertainty features.
+| Hyperparameter | CMU-MOSI | MVSA-Single | MVSA-Multiple |
+|---|---|---|---|
+| Text encoder | Pre-computed embeddings | RoBERTa-large (fine-tuned) + TextMLP | RoBERTa-large (fine-tuned, sequence classifier) |
+| Image encoder | Pre-computed features | CLIP ViT-B/32 + linear head | CLIP ViT-B/32 + linear head |
+| Batch size | 64 | 128 | 16 (text), 64 (image) |
+| Optimizer / weight decay | AdamW / 1e-4 | AdamW / 1e-4 | AdamW / 1e-4 |
+| Learning rates | 8e-4 (fusion) | 2e-5 (RoBERTa), 3e-4 (TextMLP), 8e-4 (image head) | 2e-5 (RoBERTa/text head), 8e-4 (image head) |
+| Dropout | 0.35 | 0.20 (CLIP), 0.30 (TextMLP) | 0.20 (CLIP) |
+| Loss | CE, label smoothing 0.05 | Focal, 0.02 | CE |
+| Epochs / patience | 50 / 7 | 20 / 6 | 4 / 2 (text); 10 / 3 (image) |
+| MCDM operator | TOPSIS | TOPSIS | TOPSIS |
+| Temperature grid `T` | — | {0.8, 1.0, 1.2, 1.5, 2.0} | {0.8, 1.0, 1.2, 1.5, 2.0} |
+| Text–image weight grid | — | 0.98 … 0.50 | 0.98 … 0.50 |
+| Selected `λ` | 0.4 | 0.6 | 0.6 |
 
-### 3. MCDM fusion
-Each sample's text and image class probabilities form a small decision
-matrix (`classes × modalities`), which is ranked using:
-- **TOPSIS** — distance to ideal/nadir solutions
-- **RAFSI** — rank-based aggregation
-- **TODIM** – prospect-theory-inspired pairwise dominance
-- **MARCOS** — measurement of alternatives with ratio to compromise solution
-- **EDAS** — evaluation based on distance from average solution
-
-Modality weights, temperature scaling (for probability calibration), and
-method-specific hyperparameters (e.g. TODIM's `theta`) are swept on the
-validation set, and the best configuration per method is applied to the test
-set for a fair, like-for-like comparison against the neural baselines.
-
-### 4. Evaluation
-All scripts report **accuracy** and **F1-score** for:
-- text-only
-- image-only
-- soft fusion
-- stacking
-- each MCDM method (best validated configuration)
+**Protocol.** All hyperparameters and early stopping are selected on the validation split; each configuration is
+evaluated once on test. Results are averaged over five seeds: **42, 123, 256, 512, 1024**.
 
 ---
 
 ## Getting started
 
 ### Requirements
+
 ```bash
-pip install torch torchvision transformers scikit-learn pandas numpy pillow tqdm
+pip install torch torchvision transformers scikit-learn scipy pandas numpy pillow tqdm
 ```
-A CUDA-capable GPU is strongly recommended — RoBERTa-large fine-tuning on CPU
-will be very slow.
+
+A CUDA-capable GPU is strongly recommended; RoBERTa-large fine-tuning on CPU is very slow.
 
 ### Data setup
-1. Download the dataset(s) you want to use from the links above.
-2. Extract MVSA data so that the folder structure matches:
+
+1. Download the dataset(s) from the links above.
+2. Extract MVSA so the folder structure matches:
    ```
    extracted_multiple/MVSA/
      ├── labelResultAll.txt
      └── data/
          ├── 1.txt
          ├── 1.jpg
-         ├── 2.txt
-         ├── 2.jpg
          └── ...
    ```
-3. For MOSI, follow the same convention used in `Mosi-Binary.py` /
-   `mosi-Tertiary.py` (adjust the `SOURCE_DIR` / path variables at the top of
-   each script to point at your local copy).
+3. For CMU-MOSI, point the `SOURCE_DIR` / path variables at the top of `Mosi-Binary.py` and `mosi-Tertiary.py`
+   to your local copy of the CMU-Multimodal SDK features.
 
-### Running a pipeline
+### Running
+
 ```bash
-# Binary sentiment on MVSA-Multiple (text + image fusion + MCDM comparison)
-python AMVSA-MULTIPLE-binary.py
-
-# Binary sentiment on MVSA-Single
-python AMVSA-Single-Binary.py
-
-# MOSI binary / tertiary sentiment
-python Mosi-Binary.py
-python mosi-Tertiary.py
-
-# VGG16-based variant
-python "RoBERT+VGG.Net+MCDM-Single.py"
+python AMVSA-Single-Binary.py           # MVSA-Single
+python AMVSA-MULTIPLE-binary.py         # MVSA-Multiple
+python Mosi-Binary.py                   # CMU-MOSI binary
+python mosi-Tertiary.py                 # CMU-MOSI ternary
+python "RoBERT+VGG.Net+MCDM-Single.py"  # VGG16 variant + naive fusion control
+python Single-modality-Acc.py           # unimodal references
 ```
 
-Each script will:
-1. Build/clean a CSV from the raw dataset (cached after first run).
-2. Fine-tune the text and image models.
-3. Print validation and test accuracy/F1 for every fusion strategy, including
-   a ranked table of the top-performing MCDM configurations.
+Each script builds and caches a cleaned CSV, fine-tunes the unimodal models, sweeps the fusion
+hyperparameters on validation, and prints test accuracy / F1 for every fusion strategy, including a ranked table
+of the best MCDM configurations.
 
 ### Config knobs
-Most tunable settings live as constants near the top of each script, e.g.:
-- `SEED`, `MAX_LEN`, `TEXT_EPOCHS`, `IMG_EPOCHS`, `TEXT_BS`, `IMG_BS`
-- `LR_TEXT`, `LR_IMG`, `WD`
-- `SOFT_W_GRID` (soft-fusion weight search space)
-- MCDM weight/theta/temperature candidate grids near the fusion section
+
+Constants near the top of each script: `SEED`, `MAX_LEN`, `TEXT_EPOCHS`, `IMG_EPOCHS`, `TEXT_BS`, `IMG_BS`,
+`LR_TEXT`, `LR_IMG`, `WD`, `SOFT_W_GRID`, plus the MCDM weight, temperature, and TODIM `theta` grids in the fusion
+section.
 
 ---
 
 ## Results
 
-_Add your latest accuracy/F1 numbers here per dataset and fusion method once
-you've run the scripts, e.g.:_
+Numbers below are as reported in the submitted manuscript (mean over five seeds).
 
-| Dataset | Text-only | Image-only | Soft Fusion | Stacking | Best MCDM |
-|---|---|---|---|---|---|
-| MVSA-Single |  |  |  |  |  |
-| MVSA-Multiple |  |  |  |  |  |
-| MOSI (Binary) |  |  |  |  |  |
-| MOSI (Tertiary) |  |  |  |  |  |
+### Main results
+
+| Dataset | Metric | HM²F-Net |
+|---|---|---|
+| CMU-MOSI (binary) | Acc2 / F1 / MAE / Corr | **87.14** / 85.89 / 0.548 / 0.887 |
+| CMU-MOSI (ternary) | Acc3 / F1 | 76.64 / 76.38 |
+| MVSA-Single | Acc3 / macro-F1 | **88.96** / 93.84 |
+| MVSA-Multiple | Acc3 / macro-F1 | **88.60** / 89.80 |
+
+On CMU-MOSI, HM²F-Net has the best Acc2 among the compared methods that do not use cross-utterance context; it is
+**not** best on every metric (MCL-MCF leads on F1; MMA leads on MAE and Corr). On MVSA, the quoted baselines use
+weaker encoders, so part of the margin may come from the backbones; same-backbone controls are being added in the
+revision (see below).
+
+### Effect of the hybrid layer (CMU-MOSI binary, Acc2)
+
+| Fusion | Acc2 |
+|---|---|
+| Text only (NN) | 80.95 |
+| Naive concatenation + MLP (un-normalized, untuned control) | 43.81 |
+| SAW + NN | 69.52 |
+| MARCOS + NN | 72.40 |
+| **TOPSIS + NN (HM²F-Net)** | **87.14** |
+
+The naive control is deliberately untuned; it isolates the effect of removing the decision-matrix structure and
+should not be read as representative of tuned neural fusion.
+
+### Robustness (bimodal text + audio reproduction, CMU-MOSI)
+
+| Condition | Naive fusion | HM²F-Net |
+|---|---|---|
+| Clean | 84.49 | 83.23 |
+| Acoustic noise σ = 0.5 | 53.48 | **77.53** |
+
+---
+
+## Revision experiments (in progress)
+
+The TKDE revision extends the evaluation with:
+
+- **Same-pipeline baselines** with identical splits, backbones, tuning budget, and seeds: late fusion
+  (averaged / learned), concat + MLP (naive and LayerNorm-tuned), GMU, LMF, a cross-modal transformer, and
+  TFN, MulT, MISA, Self-MM, MMIM, ALMT (via M-SENA/MMSA), MMML, and DLF.
+- **Extended benchmarks:** CMU-MOSEI and Twitter-2015/2017.
+- **Multimodal LLMs:** GPT-4o, Qwen2.5-VL-7B, LLaVA-OneVision-7B, Qwen2-Audio (zero-shot, 8-shot, LoRA), plus an
+  *MLLM-as-extractor* variant that feeds MLLM criterion probabilities into the TOPSIS decision matrix.
+- **Operator ablation:** the same decision matrix fed to TOPSIS, SAW, a linear layer, and an MLP.
+- **Bias–variance analysis:** Domingos' 0-1 decomposition and error correlation at λ ∈ {0, λ*, 1}.
+
+Scripts for these experiments will be added to this repository as they are completed.
 
 ---
 
 ## Citation
 
-If you use this code in your research, please cite this repository:
+If you use this code, please cite:
 
 ```bibtex
-@misc{punetha_multimodal_sentiment_hybrid,
-  author = {Neha Punetha},
-  title  = {Multimodal Sentiment Analysis with Hybrid MCDM--Neural Fusion},
-  year   = {2026},
-  url    = {https://github.com/NehaPunetha/Multimodel-Sentiment-analysis-Hybrid}
+@article{punetha2026hm2fnet,
+  author  = {Punetha, Neha and Abrol, Vinayak},
+  title   = {Disentangling Multimodal Sentiment: Interpretable Multi-Criteria
+             Decision Fusion for Cross-Modal Robustness},
+  journal = {IEEE Transactions on Knowledge and Data Engineering},
+  year    = {2026},
+  note    = {Under review}
 }
 ```
 
 ## License
 
-_No license file is currently included — add one (e.g. MIT, Apache-2.0) if you
-intend others to reuse this code._
+No license file is currently included. Add one (e.g., MIT or Apache-2.0) if you intend others to reuse this code.
+
+## Contact
+
+Neha Punetha — nehapunetha80@gmail.com
